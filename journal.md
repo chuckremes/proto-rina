@@ -48,7 +48,9 @@ Thinking a little bit more about the embedded space. Discovered that there are s
 
 For the 8-bit controller space, my guess is that it will need to be custom hardware that is RINA aware. Doubtful that there would be sufficient horsepower or RAM to run even an optimized software version of RINA at that level. I don't know this for fact... I'm still quite ignorant of the embedded space but this is the impression I'm getting from my current research. I should look for TCP/IP stacks that run on 8-bit. If that more complex stack can run there then certainly a simpler RINA stack could too.
 
-Also thought a bit about addressing for this space. I think a single byte is more than enough. If there are more than 255 devices that are vying for enrollment in a DIF, then we'll need a higher level DIF to overlay it and provide routing between them. Certainly for 8-bit controllers this could happen but we'd probably want the 2-DIF to be created and managed by a 32-bit controller. Again, I'm ignorant. 
+Also thought a bit about addressing for this space. I think a single byte is more than enough. If there are more than 255 devices that are vying for enrollment in a DIF, then we'll need a higher level DIF to overlay it and provide routing between them. Certainly for 8-bit controllers this could happen but we'd probably want the 2-DIF to be created and managed by a 32-bit controller. Again, I'm ignorant.
+
+Jeff has indicated willingness to translate code written in higher level languages to C. Nice of him. Before this project is done, I'm certain I'll have to dust off my C skills from yesteryear.
 
 #### Next Steps
 I need to reread the Reference Model docs that Day & Co wrote. Now that I've decided on a bootstrapping approach, the obvious thing to do here is to write a minimal implementation that runs on a single host probably via shared memory. I can stub out several of the components like EFCP which aren't necessary. Will they be no ops? Don't know yet.
