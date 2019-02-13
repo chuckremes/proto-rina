@@ -1,7 +1,7 @@
-20190211
+# 20190211
 This is my first official journal entry. The purpose of the journal is to record ideas on how to engineer and implement RINA. I have been thinking off and on about how to handle this implementation for about a year, but I haven't recorded any of my thoughts. I now find myself having to rediscover ideas and concepts that I had previously thought through. That has annoyed me. Time to write them down.
 
-#### Layer1 / Layer2 hardware
+#### Layer1 / Layer2 hardware / Embedded
 I know the concept of the OSI layers is outmoded with RINA but it's useful shorthand for the rest of the world to understand certain concepts. I've been thinking about embedded applications of RINA and of course one of the first would be as a Layer2 hardware device or network interface controller.
 
 A PHY is the layer1 device. It handles translation of the layer2 commands into signals on the wire, EM signals over the aether, optical signals over fiber, etc. Layer1 is completely software protocol agnostic.
@@ -41,3 +41,20 @@ Ultimately, I decided that the system itself (the operating system) should proac
 The `rlite` README pretty much confirmed this approach.
 
 For my proof-of-concept, I'll probably just create the 2-DIF for intra-host communications. Lots to explore here.
+
+# 20190213
+#### Embedded
+Thinking a little bit more about the embedded space. Discovered that there are some decent choices for high level languages that can run embedded. Specifically, we have Lua (eLua), Python (ePython), and Ruby (mruby). Of course, these are only suitable for 32-bit processors primarily because of overhead. Each requires a runtime and the concomitant additional RAM to hold it.
+
+For the 8-bit controller space, my guess is that it will need to be custom hardware that is RINA aware. Doubtful that there would be sufficient horsepower or RAM to run even an optimized software version of RINA at that level. I don't know this for fact... I'm still quite ignorant of the embedded space but this is the impression I'm getting from my current research. I should look for TCP/IP stacks that run on 8-bit. If that more complex stack can run there then certainly a simpler RINA stack could too.
+
+Also thought a bit about addressing for this space. I think a single byte is more than enough. If there are more than 255 devices that are vying for enrollment in a DIF, then we'll need a higher level DIF to overlay it and provide routing between them. Certainly for 8-bit controllers this could happen but we'd probably want the 2-DIF to be created and managed by a 32-bit controller. Again, I'm ignorant. 
+
+#### Next Steps
+I need to reread the Reference Model docs that Day & Co wrote. Now that I've decided on a bootstrapping approach, the obvious thing to do here is to write a minimal implementation that runs on a single host probably via shared memory. I can stub out several of the components like EFCP which aren't necessary. Will they be no ops? Don't know yet.
+
+But certainly I'll need a Flow Allocator, an Enroller, Directory Services, and other RIB-like processes. Doubtful I'll need an RMT for the first PoC (proof of concept) though if I want to experiment with multiple DIFs on one box then the RMT becomes important again. Same for a Fragmenter/Reassembler since the DIFs may not agree on max SDU size thereby necessitating that additional work.
+
+#### Directory Services & Addressing
+It occurs to me that when DIFs map addresses between each other for routing that this mapping is essentially an ARP table.
+
