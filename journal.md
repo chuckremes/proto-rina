@@ -60,3 +60,103 @@ But certainly I'll need a Flow Allocator, an Enroller, Directory Services, and o
 #### Directory Services & Addressing
 It occurs to me that when DIFs map addresses between each other for routing that this mapping is essentially an ARP table.
 
+
+# 20190215
+#### Languages
+Forgot Crystal as a potential candidate. Benefit of Crystal is that it compiles to machine code and has no runtime component. It can probably target less capable microcontrollers as a result. Also, it's Ruby-like syntax is familiar to me. Lastly, it has first-class support for C structs/unions so manipulating bits & bytes is pretty easy.
+
+#### Ruby Note
+To minimize allocations and GC overhead, design all the "functional" aspects of the code to be classes with class methods. They'll allocate upon loading so their memory footprint is fixed. Anything that will maintain state will obviously need to be allocated via `.new` so care should be taken to minimize that requirement. Instead of Strings, use Symbols. Use Constants. Preallocate any arrays, hashes, or other data structures used for local book keeping.
+
+#### Insights
+While reviewing the reference model for the umpteenth time, this section jumped out at me again:
+
+```
+Consideration in the design of a DAF should be given to making the OIB Daemon the only generator of application SDUs to the underlying DIF.  This not only allows better optimization and control, but facilitates the shift from an IPC model to a programming language model.  Hence, the work of the DAF can be expressed entirely in terms of operations on the RIB.
+
+There is considerable literature on distributed databases that can be drawn on here.
+```
+Slightly rephrased, the DAF would define operations on its local RIB to CRUD data, perform a calculation, move data from A to B, etc. The DAF would write to the RIB and the RIB itself would generate the SDUs to remote locations. I believe this means the DAF itself wouldn't be reading/writing from the remote name but would use the RIB as a proxy object or like a write-through cache?
+
+I think the real insight to be gained here will be to actually review the literature on distributed databases. I'm curious to know what their APIs look like from the perspective of the local user.
+
+Perhaps ask Day or the mailing list for good examples of this literature.
+
+# 20190219
+#### Enrollment
+```
+5.5 DAF Enrollment
+For an application process to join a DAF, it must be enrolled. Enrollment is carried out by the DAF Management task of the DAF infrastructure. Enrollment begins with an application process establishing an application connection with a member of the DAF. Once this management connection is created and the new member has been authenticated, the new DAP must be initialized. This may include but is not limited to the following operations:
+
+1) Determining the current state of the new member (which may be a returning member);
+2) Determining the capabilities of or assigning capabilities to the new member;
+3) Assigning one or more synonyms to the new member for use with in the DAF;
+4) Initializing static aspects of the DAP, perhaps including downloading code; and
+initializing any DAF related policies;
+5) Creating additional connections to support distributed RIB operations;
+6) Initializing or synchronizing the RIBs; etc.
+```
+Figure 10 in that same section is very interesting. Its accompanying text clarifies the pictures, so the picture alone is insufficient.
+
+In RINARefModelPart2-2, section 2.6.2, it discusses Shim DIFs and bootstrapping.
+```
+There is also the null case or bootstrap case, where a processing system is joining is first DIF. There are basically 3 cases to be considered here:
+1) The use of a Shim DIF: For existing legacy media protocols8, RINA employs a Shim DIF. A Shim DIF provides the minimal functionality necessary to make an existing media standard have the same API behavior as a DIF with the properties of this media. A Shim DIF makes no attempt to “enhance” the existing media protocol. In this case, enrollment will follow the procedures of the legacy protocol. Normal DIF operations will work above that.
+2) A DIF operating directly on point-to-point media: In this case, we must assume that there is either some ad hoc first PDU or that the process on the end of the point-to-point media, i.e. a wire, is expecting a RINA enrollment procedure. This will begin with CACE-Connect, also referred to as an M-Connect. Given these conditions the procedure can progress with normal enrollment.
+3) A DIF operating directly over a multi-access media: In this case, we must assume that some unique identifier, e.g. an equipment serial number, is available to distinguish correspondents at the other “end” of the media. Either an ad hoc first PDU will carry this information or the “other ends” will be expecting a CACE- Connect PDU with this “unique identifier” as the Destination Application name. (The Source Application name will also have to be known to be unique within the scope of the media.) The source unique identifier must identify the IPC Process that is requesting to join the DIF. The destination unique identifier may name either the DIF being joined or an IPC Process that is a member of the DIF.
+This exchange can now be used to either create a DIF on top of the media or join an existing DIF using the normal procedures, including the assignment of addresses within this DIF. However, note that the “unique identifiers” will still be required to distinguish traffic between different DIFs on the same media and within the scope of the media. There is, in effect, a very minimal Shim DIF over the multi-access media itself.
+```
+
+#### DIF Allocation
+RINARefModelPart2-2, section 2.6
+```
+While networks can be constructed by external ad hoc means, the DIF-Allocator provides the means for the recursive construction of networks organically based on user demand.
+```
+
+#### Relaying
+RINARefModelPart3-1 180617
+No matter how many times I read the spec, this passage is one of the most important.
+```
+Because there can be more than one DIF of the same rank, there is no direct IPC between different (N)-DIFs, i.e. DIFs of the same rank, without relaying above.  IPC between DIFs of the same rank within the same processing system must use either an application process with only local knowledge (sometimes called a protocol converter), or by an application process with knowledge of a wider scope e.g. relaying by an IPC Process of a (N+1)-DIF.
+```
+Think of it this way. A single host probably has one ethernet port. So, we'd have a "DIF-0" to manage it. Another host on the same LAN would have the same configuration, so there's another "DIF-0" there. These are DIFs of the same rank. We would view these as point-to-point links in a modern switched ethernet environment. They would all enroll into DIF-0 across the LAN.
+
+A process on that host that needs to communicate elsewhere will likely enroll as a member of DIF-1. For DIF-1 on HostA to communicate to a process on HostB, DIF-1 must use DIF-0 to send a message and the receiving DIF-0 will relay to its local DIF-1 to deliver the message. This is an example of (N)-DIF using (N-1)-DIF for relay.
+
+That's probably the common case. 
+
+Now let's look where there are DIFs of the same rank on the same host. There could be a DIF-0 for ethernet and a DIF-0 for wireless. Both of these DIFs will enroll into their respective "ethernet DIF-0" and "wireless DIF-0" layers. If an application on "ethernet DIF-0" needs to communicate to an application available on "wireless DIF-0", then there must be a DIF-1 that has sufficient scope to encapsulate both DIF-0s of the same rank. It will act as the relay to deliver the message.
+
+It's a bit mindbending because we don't typically think of "going up" the stack to route!
+
+# 20190221
+#### EFCP and State Vector
+Just a reminder to myself that a "state vector" is nomenclature unique to the RINA documentation. No one else seems to call it that. In the IP world, it's called a Transmission Control Block (TCB). 
+
+
+# 20190227
+#### Minimal Viable Product (MVP)
+What's the minimum I need to do to get some `RINA` action?
+
+My first thought is that instantiating a DIF is probably the MVP. However, a DIF without users is useless and therefore boring.
+
+My second thought is that insantiating a DIF and having a single AP enroll in it is probably more interesting. That's at least somewhat useful and allows me to verify that enrollment and its dependent components is somewhat fleshed out (at least for local users). Better but still somewhat useless.
+
+My third thought is that I need to have two APs enroll and exchange some messages. Ah! Useful!
+
+So that shall be my target. I will:
+1. Instantiate a single DIF on a host
+   * Create the minimal required services to support
+     * Enrollment
+     * Service discovery / lookup
+     * SDU Protection
+     * Flow instantiation with a simple QoS
+     * Bidrectional message exchange
+2. Create two application processes that understand how to
+   * Enroll in a DIF
+   * Open a flow
+   * Write a message
+   * Read a message
+   * Close a flow
+
+On second look, this is quite a bit of work. I've ruminated long enough on design, how all of these pieces fit together, etc. I have many unanswered questions. I can no longer answer these questions by merely thinking about them and reviewing the reference model for the umpteenth time. I need to engineer and get my hands dirty. This hands on approach will cement my understanding and open practical avenues for answering my outstanding questions (most of which I haven't recorded here).
