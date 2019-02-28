@@ -160,3 +160,51 @@ So that shall be my target. I will:
    * Close a flow
 
 On second look, this is quite a bit of work. I've ruminated long enough on design, how all of these pieces fit together, etc. I have many unanswered questions. I can no longer answer these questions by merely thinking about them and reviewing the reference model for the umpteenth time. I need to engineer and get my hands dirty. This hands on approach will cement my understanding and open practical avenues for answering my outstanding questions (most of which I haven't recorded here).
+
+
+#20190228
+#### Flurry!
+After my writings last evening I spent the time walking home from the train thinking on some concrete steps. I suddenly realized that I had not picked the simplest MVP.
+
+A little backstory. I was involved with the `ZeroMQ` project almost from its inception. I got to know Pieter Hintjens fairly well and met up with him on several occasions when he traveled through Chicago. I wrote the Ruby FFI bindings for the zeromq project and have maintained it now for many years.
+
+One of the most useful aspects of the zeromq library was its concepts of transport independence. One could use `inproc`, `ipc` or `tcp` without changing any code at all beyond the URI for specifying the source/destination address (it now offers `pgm`, `epgm`, and `vmci` as additional transports). In this case, `inproc` was utilized for sending messages between threads. The `ipc` transport utilized UNIX domain sockets for intra-host communications. The other transports are self explanatory.
+
+It's the `inproc` transport that fueled my imagination last night. The very simplest thing I could create would be a DIF that is in-process that acts as intermediary for different threads within that process. Enrollment gets very simple. SDU protection is unnecessary because the SDU never leaves the DIF.
+
+I searched my memories for any mention of this in the `Patterns` book or any of the reference model. I don't recall it but I'm certain it's in there. This approach of applying the pattern is probably considered a "degenerate case." However, that does not mean it has no use; on the contrary, this is very useful!
+
+So my new MVP will likely aim to provide an in-process DIF. I avoid all of the complexities of setting up POSIX (or SysV) shared memory and can rely on simpler mechanisms. Directory and service lookup should also be quite simple. There's obviously no need to worry about EFCP, RMT, or any related issue (or is there?).
+
+When I get this working, it may provide a simpler approach for parallelism (and concurrency) within a single process. Regardless, it will give me confidence in the external API (open_flow, close_flow, read, write, etc.) which can be applied to a larger proof of concept at a later date.
+
+And most wonderful of all is that this should allow for scaling transport from within a single process all the way to distributing the process across many hosts and many miles (or kilometers if you prefer). The coding approach should be unchanged since the API should be the same.
+
+Additionally, the recursive nature of RINA makes the scaling dead simple. The in-process DIF can directly deliver messages to other threads within that process since they are all likely to be members of the DIF. If two separate processes need to collaborate, we'll need a lower ranking DIF that can act as transport between them. Hmmm, somehow this feels opposite to intentions... generally when two DIFs of same rank need to talk, the system somehow needs to create a DIF of a higher rank that they can both join. Will need to see how this shakes out in practice.
+
+#### Physical Layout
+For this newly imagined MVP, I'll have a `lib` directory. Within it will be a `proto-rina-client` folder which will handle all of the instantiation for in-process DIF bootstrapping. Initial implementation will probably use a mutex for synchronization but ultimately I'll want to implement some kind of ring buffer set so no message copying is necessary. 
+
+#### Zero Copy
+Interesting thought that just occurred while writing that last sentence above. When imagining how to do this to be language agnostic, it always comes down to preallocation of C structs via malloc (or similar) and passing bytes around. However, within a process that is completely unnecessary. Just pass references. This makes it much simpler for a managed language like Ruby too and the way the messages are shared is just an implementation detail within this DIF. The reference model goes to great pains to avoid nailing down *how* this should work, so intra-DIF it can probably just be anything (like reference sharing).
+
+#### Physical Layout Again
+Now that the interlude is over, back to this. Anything more to say? Hmmm, it's probably best to layout the files to correspond to the main components of a DIF like enrollment, CDAP, FlowAllocator, etc. I don't have a better idea at the moment so I'll brute-force it to get it running and then refactor.
+
+Remember!
+1. Make it work!
+2. Make it _correct_!
+3. Make it fast (and small).
+
+I'll try not to get ahead of myself here.
+
+#### Class Design
+My understanding of the DIF concepts leads me to believe that only a few of the components maintain any kind of state. Most of the work is transformative in nature where bytes (or a reference) passes through and some work is performed on it.
+
+So I think most of the classes will be written as Ruby classes containing only class methods. Mostly functional in nature (e.g. given same inputs, always produce the same outputs).
+
+A few classes will be specifically allocated. 
+
+I assume that most of the structures for maintaining state will be allocated at startup and fixed for the duration of the program's life. 
+
+Obviously, any heap allocated memory should be purely for the use of the local process. Shared memory should only contain fixed structures for the efficient sharing of data between DIFs on the same host.
