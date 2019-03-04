@@ -208,3 +208,36 @@ A few classes will be specifically allocated.
 I assume that most of the structures for maintaining state will be allocated at startup and fixed for the duration of the program's life. 
 
 Obviously, any heap allocated memory should be purely for the use of the local process. Shared memory should only contain fixed structures for the efficient sharing of data between DIFs on the same host.
+
+
+# 20190304
+#### Greatest Hits
+"A network without flow control is pathological." - John Day, 20151210, RINA mailing list
+
+#### Further Design Thoughts
+I have to remind myself sometimes that my 3-step process listed above doesn't contain a zeroeth step: `0. Ignore your experience`.
+
+The reason I write this is because I have been thinking about the initial implementation all in a single process. There are M writers and N readers from one perspective, but there aren't many efficient implementations of data structures that can handle that kind of access pattern. I lean on my experience with ZeroMQ here where I recall that we oftentimes ran into a fast producer / slow consumer situation. The queues would fill up and put backpressure on the producer to slow down.
+
+When looking at implementing such a setup here, I note that each thread is a reader and a writer. The RINA thread itself is too. A naive implementation would slap a single mutex on a data structure that all M worker threads were read/write from/to but I'm not naive. I'm not going to jump to the ultimate solution here because I don't actually know what it is. However, I suspect that each worker thread should have a separate read queue from its write queue. A worker that writes 99% of the time and reads 1% (or never) shouldn't have the same allocation of resources if possible; they might just be wasted.
+
+Perhaps the QoS cube can influence this?
+
+Anyway, since this is all in-process, it occurs to me that allowing a writer to queue within the RINA thread is somewhat non-sensical. Why make the RINA thread handle this queue management / resource allocation issue when the worker thread has the most localized knowledge of its requirements? I'd say that we want to implement some kind of flow control even within the process to prevent fast producers from overrunning slow consumers.
+
+So how do we do this? I think the answer lies in the API. Presumably we will have `flow_open`, `flow_close`, `flow_read`, and `flow_write` (it remains to be seen if we have the `start`/`stop` mechanisms described by Day). If a fast producer is calling `flow_write` in a tight loop, it should get back a failure if it attempts to overrun its consumers. The producer can then choose to either drop the message itself or block while waiting for the consumer to catch up.
+
+A practical implementation of this would look like a 1-element buffer. When a writer has written, it can't write again until RINA has delivered that message. Plus, every reader has a 1-element buffer. If there is already an element waiting, no other message can be delivered. Of course, this is all influenced by the QoS cube. If the cube specifies that newer message have priority over older messages, the buffer would be overwritten for the slow consumer.
+
+One of these days I'm going to have to dig in to what a QoS "cube" looks like. I recall investigating the ideas behind it many months ago and discovered that it's probably a multi-dimensional cube with dimensions like jitter and latency. I forget what the others are...
+
+Ah, [here's an article on Quality of Service](https://infogalactic.com/info/Quality_of_service) that mostly defines it as bit rate, delay, jitter (delay variability), packet dropping probability, and bit error rate. I see 5 dimensions here. Looking further down the page, it's alternately defined as throughput, dropped packets, errors, latency, jitter, and out-of-order delivery. Now 6 dimensions. I wonder what the difference is between "dropped packets" and "errors." Ah, dropped packets is kind of a superset of errors. A packet may be dropped due to a bit error OR if the intermediate buffers are full.
+
+Anyway, will need to look into this deeper soon. I do believe that QoS is relevant even in-process so I'd like to get that correct.
+
+Time to start coding? Nervous...
+
+#### Coding
+Just created some directories and setup the rspec infrastructure. What's the simplest thing I can get to work? Probably have the DIF bootstrap itself and setup a few things, though that's boring. The simplest useful thing I can do is informed by my earlier discussoin above on this topic... get two threads to exchange a message with each other. This will require enrollment, flow allocation, and message delivery.
+
+*Really nervous* now.
