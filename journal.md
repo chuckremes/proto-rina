@@ -241,3 +241,93 @@ Time to start coding? Nervous...
 Just created some directories and setup the rspec infrastructure. What's the simplest thing I can get to work? Probably have the DIF bootstrap itself and setup a few things, though that's boring. The simplest useful thing I can do is informed by my earlier discussoin above on this topic... get two threads to exchange a message with each other. This will require enrollment, flow allocation, and message delivery.
 
 *Really nervous* now.
+
+#### Random QoS
+Should QoS include safety dimensions like encryption? What about compression or lack of it? For multimedia it seems that would be useful... don't compress this again because it's already been compressed!
+
+
+# 20190305
+#### Collaborators!
+My good friend Donovan Keme (@digitalextremist) and I are going to collude on this project. Can't wait.
+
+#### Enrollment Again
+The reference model refers a few times to the fact that a DAP may be enrolled in multiple DIFs. The API (flow_allocate, flow_deallocate, flow_read, flow_write) and its arguments don't show any reference to a DIF. Therefore, I assume the handle/reference to the API itself is coming *from the DIF*. This might be wrong but let's roll with it for now.
+
+So, before a flow can be allocated, one must first be enrolled in a DIF. Need to look through the docs and see how this works because it is probably the first thing I need to implement.
+
+#### Review of Ref Model Again
+Looking at the reference model again it's getting clearer what these things are called. An Application Process (AP) may have several Application Entities (AEs) that communicate with a DIF. The AP, either singly or as part of a group, is considered a DAF. For members of a DAF to communicate, they need to use the underlying DIF. To use the numbers, an (N)-DAF uses the (N-1)-DIF for IPC. 
+
+Another way to look at this from a single process standpoint is that each thread in the process is potentially an AE. Collectively they are a DAF that may need to coordinate to provide some service. They have a Distributed Application Name (DAN). Actually, two. One is a multicast name that refers to the collection and a second one that refers to a specific entity (so at least two maybe more). Anyway, for the DAF AEs to enroll, they need to use the facilities provided by the (N-1)-DIF.
+
+
+# 20190306
+#### Enrollment Again
+This will be a popular header until I solve this problem.
+
+Reference Part3-2 covers flow allocation. For a process A to talk to process B, it always seemed like there was some magic involved in allowing the DIF to know who A and B are. Turns out that there is a registration process that I had previously overlooked. In other words, processes A and B need to register with their local DIF to indicate that they are available.
+
+When A wants to contact B, it sends an Allocate Request via an API call to the local DIF's IPCP. The IPCP hands this off directly to the FlowAllocator. The FlowAllocator allocates an instance (FAI) to handle the lifecycle of this connection. The FA (which knows about *all connections*) determines if the request can be accommodated from a resource perspective. If no, return an error. If yes, create the FAI and let it generate a Create PDU which leads to an EFCP instance being created. What I wrote in this last paragraph is my paraphrase of the RefModelPart3-2 section 2.2.2; see there for the rest of the story.
+
+#### Minor Eureka
+Just had a little eureka! moment. When reading the Enrollment-BasicSpec180610.doc it finally dawned on me that Enrollment is how an IPCP connects to an existing DIF. All this time I thought enrollment was how an AP joined a DIF. Wrong!
+
+The AP registers itself with some omniscient DIF Mgmt System (DMS in the docs). That same registration interface should provide the handle/reference to the DIF that the AP wants to use for IPC. The AP, either singly or multiply, is viewed as a DAF. This DAF stuff has confused me because it's an "enhancement" from the architecture proposed by the book and only shows up in these later writings. It has muddied the waters for me. Writing this now has me scratching my head wondering why the AP doesn't have to enroll in the DAF? But eventually you get to this infinite regression problem where someone somewhere just _springs into being_ without any enrollment at all. Just... unclear. Might have to ask on the mailing list about this.
+
+I hope my eureka was real. I might be getting excited about drawing the wrong conclusion. :)
+
+
+# 20190318
+#### Vacation
+I was on vacation all of last week and had grand plans to do some programming. I didn't actually write any code or any journal entries though. I found myself with my 3-month old in one arm while I used the other to toss a ball to my 2-year old. So, I did programming in the sense that I was civilizing my 2-year old and loving my 3-month old. Not what I had planned but fulfilling and rewarding nevertheless. I squeezed in a little thinking during that time.
+
+#### Science vs Engineering
+John Day goes to great pains in the Reference Model write-up to warn against using the descriptions as an engineering outline. He is correct to do so. His reference model and overall `RINA` work is _science_ whereas I intend to perform some feats of _engineering_ here.
+
+Looks to me like `Step 1` of the engineering effort will be to create process-wide `naming service`. This service will allow threads to register themselves as they bootstrap and be assigned a name and address. I'll need to reread the naming chapters again but I think it will be relatively straight forward.
+
+Eventually, this in-process naming service will know how to delegate to the host-wide naming service to find services in other processes on the same host. Further, that host-wide naming service will eventually be augmented to pass inquiries via the (N-1)-DIF to other hosts to find services. So none of this is wasted effort; it's a repeatable structure that works at difference scopes (process, host, LAN, WAN). Beautiful, really.
+
+The repeating structure is described by Day but the engineering challenges and interfaces get little to no discussion. I'll be working my way through that here. I've said it before and will say it again: this is a large-scale "rubber ducking" session to guide my thoughts and refine my ideas. I don't have a collaborator to discuss these things in real-time, so my own psyche will have to do.
+
+#### Zero-copy
+I am probably getting ahead of myself here. For managed languages like Ruby, we can still use fixed-size ring buffers and similar structures to share data between threads. The initial code will probably just use a `Queue` or a mutex-wrapped array to keep things simple. Ideally there will be no object copying in-process. 
+
+I have thought that the delimiting function could potentially act as a mechanism to encode Ruby objects to a primitive form (JSON, netstring, whatever) for transfer out of process. Further thought has pointed to the SDU Protection function as the right place. The reason it's not clearly in one or the other because the delimiting function needs to be aware of the max PDU size but this happens earlier in the pipeline from the Protection function. In between them lies the RMT (Relaying and Multiplexing Task) which determines if the PDU will be mapped from this DIF to a (N+1)-DIF or a (N-1)-DIF. The reference model says there may not be an individual task identified as RMT, so from an engineering perspective we could probably put this relaying function at the very beginning of the DTP pipeline. If relaying out-of-process then encode; if not relaying, then skip encoding and just pass the in-memory reference.
+
+I'm not sure if this breaks other guarantees or not. Typically we see the information flow down the pipeline like this: delimiting passes PDUs to EFCP which passes them to RMT and finally passes to SDU Protection. In the delimiting step the PCI has already been added.
+
+It's clear I don't understand this enough. Time to dive in again.
+
+# 20190319
+#### Another Eureka?
+The delimiting step seemed too _limited_ for what I want to achieve in a dynamic language like Ruby. I want to pass a reference as long as we are still *in process* rather than marshal/encode the damn thing just to pass it to another thread. It seemed like the RMT function was out of place. If I could _just know_ if the message would be passed through the process boundary, I would know to encode it at the delimiting step. But RMT doesn't get invoked until _later_. What to do?
+
+My internal dialog was raging. "This is *not* the service level that I need! I need... duh." Service Level. What controls that? QoS cube. What concept has been hammered into the reader of the Patterns book from the earliest chapters? Separate mechanism from _policy_. 
+
+I need a _policy_ assigned to the delimiter based on parameters in the QoS cube. I needed to expand my thinking beyond the 5 or 6 dimensions of the QoS cube I imagined: jitter, delay, bps, etc. I need a dimension called "zero copy" or similar. 
+
+When the _flow is being established_ I can specify that I need "zero copy" or "reference pass" as part of my QoS. If both ends of the _flow_ terminate within the same process boundary, I can achieve that goal! If one end terminates outside the process, I'll get an error back on that dimension (with a suggested downgrade?).
+
+I'll have to look at the mechanism for associating policies with different aspects of the DIF, but it's clear that I can/should attach an encoding policy to my "zero copy" requirement. Pass a function pointer which itself will take the object-to-be-encoded as an argument and figure out what to do with it. In Ruby that's easy. In C it's also easy.
+
+For the "zero copy" case, the encoding is a no op. For passing the process boundary, it could be as simple as:
+
+```ruby
+def encoding_policy(object)
+  object.encode
+end
+```
+For C, some casting will be required. I'll have to refamiliarize myself with the right syntax, but psuedo-code it would be:
+```C
+void* encode(obj_ptr *p) {
+  ((some_struct *) p)->encode()
+}
+```
+Anyway, the main take away here is that I can specify a QoS for the _flow_ itself along with an associated policy. I no longer need to wait to the RMT stage to know if the message will pass the process boundary *_because_* the _flow_ establishment confirmed that will be true for the lifetime of the _flow_. The policy is enforced "globally" on this flow.
+
+Second, what's even cooler is that I could establish another flow to an AP outside this process boundary and still potentially get "zero copy" if it's on the same host. This wouldn't work for Ruby but it damn sure would work for passing object pointers in a language like C if the objects were allocated in shared memory. If I establish a flow looking for "zero copy" and the remote end terminates in an AE in another process on the same box, then the policy could allow for reference passing all the way through. This would even work through multiple DIFs all on the same box if they support the "zero copy" QoS. Very cool.
+
+Third, the original AP could have an AE establish a flow to a remote (different host) AP and transparently handle the encoding/decoding of the Ruby object as it moves through the flow. Normally when dealing with BSD sockets you need to provide a raw byte buffer to transmit. With a _flow_, pass the object reference to it and let the policy handle the rest. Could be a reference pass, could be an encoding step (JSON, ProtocolBuffers, netstring, etc), could be a `bcopy` to a newly malloc'ed buffer...
+
+This eureka moment came after I was reading the DelimitingGeneral130904.pdf doc. I despaired at all the discussion about the header layout. It was clear that I needed to know inproc/outproc before this step. In my despair, I found the solution. Didn't take long either... I only wallowed in it for 5m or so until the light bulb went off. :)
