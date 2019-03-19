@@ -331,3 +331,22 @@ Second, what's even cooler is that I could establish another flow to an AP outsi
 Third, the original AP could have an AE establish a flow to a remote (different host) AP and transparently handle the encoding/decoding of the Ruby object as it moves through the flow. Normally when dealing with BSD sockets you need to provide a raw byte buffer to transmit. With a _flow_, pass the object reference to it and let the policy handle the rest. Could be a reference pass, could be an encoding step (JSON, ProtocolBuffers, netstring, etc), could be a `bcopy` to a newly malloc'ed buffer...
 
 This eureka moment came after I was reading the DelimitingGeneral130904.pdf doc. I despaired at all the discussion about the header layout. It was clear that I needed to know inproc/outproc before this step. In my despair, I found the solution. Didn't take long either... I only wallowed in it for 5m or so until the light bulb went off. :)
+
+#### Quote
+"A DAP uses a DIF to send SDUs to other DAP members of the same DAF. Two DAPs in the same DAF must use the same DIF to communicate directly."
+
+I don't know how many times I'll need that drilled into my head. But see below because this quote ignores the degenerate case.
+
+#### Infinite Regress
+My approach has been that each thread in a process corresponds to an AE. They are the DAPs in a DAF. Now we see from above that a DAF must use a DIF to communicate. However, the ref model says that a DAF has an IPC Process Management task. It's the job of this task to coordinate with the underlying DIF to facilitate the communication. 
+
+Originally I envisioned a single thread in the AP/DAF that would be designated as the DIF. However, I apparently would then need to push IPC Process Management into each of the AE/DAPs in order to treat that thread as a DIF. Alternately, there would be a DIF thread and a IPCP thread within the same process. I think that's the wrong perspective. Reason is then you have to look at each AE/DAP and apportion some piece to IPC Process Management OR you end up doubling your resource consumption for IPC. Dumb.
+
+Therefore, let's say the AP/DAF has many threads that act as AE/DAPs. A single thread can then be designated as the IPC Process Management Task. It will facilitate communication between the threads. This is the degenerate case; we don't break it down any more granularly than this because it doesn't gain us anything. In this degenerate case, _there is no DIF_ to facilitate the communications so the quote above is wrong.
+
+Once this works within a single AP, then I can extend the problem to manage communication between two APs (both members of same DAF). At this point I will need a (N)-DIF for them to communicate over. Each AP will have its designated IPCP task thread which will pass data to the DIF for delivery to the remote end.
+
+This makes more sense. Another way of looking at this is that an AP/DAF does NOT have an internal DIF. That concept regresses infinitely. But if we say each AP/DAF has a dedicated IPCP thread (or task) then conceptually we can make the quote above come true once there are 2+ DAPs in the DAF. 
+
+#### Enough Theory
+Time to put these thoughts into practice tomorrow.
