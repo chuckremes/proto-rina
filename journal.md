@@ -350,3 +350,131 @@ This makes more sense. Another way of looking at this is that an AP/DAF does NOT
 
 #### Enough Theory
 Time to put these thoughts into practice tomorrow.
+
+
+# 20190320
+#### Naming Note
+A whatevercast name is a name of a set.
+
+#### Quote
+"Or more precisely, there is not much point in trying to draw a fine line between the DAF IPC Management components and DIF components, such as Resource Allocation, etc. They can and should meld into each other. In other words, it is pointless to try to distinguish too rigidly between DAF IPC management and the broader DIF IPC Management associated with DIFs. What is important is the subset that is available for DAF support alone. That should be limited to coordination required for DAF members. The only coordination among DAF members should be for IDD updates. Any coordination beyond that should be a DIF."
+
+I don't know what IDD means in this or any context. But the quote above gives me hope that I'm not straying too far afield.
+
+#### Quote
+"When IPC Management receives an Allocate Request for IPC resources, if the IRM fails to find the requested application supported by any of the DIFs available to it, it will consult the DIF Allocator to find a DIF that does support the requested application."
+
+Interesting. This implies that a DIF Allocator can know about DIFs (or can find DIFs) that its own DIF doesn't know. Not quite sure what to make of this or how it would work. Probably more of those "evil" well-known ports.
+
+#### Startup
+After name registration, we need a way for the threads to indicate they want to create a flow between them. We should probably have some threads defined as flow listeners and others as flow connectors. The threads should be configured to know which *services* they want to get (not necessarily a specific thread name!) and let the IPCP handle matching them up.
+
+In my example case, I'm planning to have a `JokeServer` which listens for requests to tell jokes, and a `JokeClient` which seeks out a JokeServer and asks it for jokes. No "well known" ports here, just names. Let the IPCP manage the allocation as the ref model defines. I'm thinking each thread will register its name (e.g. JokeClient, JokeServer) but the service name will be "joke teller". So "joke teller" will be a synonym for this specific JokeServer.
+
+The authentication/CACE should be a null op here for simplicity. But the threads will still need to go through the connect-request -> connect-response -> establishment dance. Once working, we can experiment with more interesting authentication protocols.
+
+I'll be interested to see what the in-process QoS cube looks like. Guess I get to define it.
+
+#### DAF Enrollment Again
+This section (3.3.6) comes after the discussion about Application Connection Establishment.
+
+"For an application process to join a DAF, it must be enrolled. Enrollment is carried out by the DAF Management task of the DAF infrastructure. Enrollment begins with an application process establishing an application connection with a member of the DAF. Once this management connection is created and the new member has been authenticated, the new DAP must be initialized."
+
+Not sure here... perhaps each thread (a DAP in the parlance) needs to establish a connection/flow with the IPCP? And this flow is separate from the flow the threads will want to establish between each other? Ugh... these terms are so similar and the boundaries so vague; hard to keep it straight. Or maybe... in this simple case the Enrollment is indistinguishable from a normal Application Connection Establishment. We aren't setting up any distributed RIB synchronization, downloading code, etc. Maybe they are all no ops in this simple case. I'm going with that for now.
+
+Mmm, perhaps this is another eureka moment. I think _enrollment_ means that the IPCP needs to establish itself with the larger DAF/DIF to join it. That is, the IPCP is contacting and enrolling with an IPCP in another DIF/DAF. In our case, we are all in-process so this is a degenerate case (to avoid infinite regress!). Since each thread/AE/DAP _does not_ have its own IPCP then no enrollment occurs. Phew! I am pretty sure this is correct.
+
+
+# 20190321
+#### Housekeeping
+My collaborator and friend Donovan Keme has been watching this space closely. He made a wonderful suggestion which is to extract certain elements or bits of wisdom from this journal to its own document. Asking someone to wade through this doc with all of its fits-and-starts, blind alleys, and plain old _wrong conclusions_ is probably a bit much. But if I can distill the lessons learned down to a separate document then I can keep rubber-ducking here while also separating the wheat from the chaff.
+
+I'll do that soon.
+
+Next, Donovan has a nice web hook all setup on his slack channel. It would be convenient if my commits popped up in a channel there both to serve as notice of progress and to allow interested parties to have a one-stop shop for getting the latest news. I'll look into what this takes (API token?) and get it setup for him.
+
+Lastly, he seems to think doing this work on a train is cool. I wish. :)
+
+
+# 20190322
+#### Enrollment
+The Patterns book page 260 confirms what I said on 20190320. Enrollment happens when an IPCP uses a (N-1)-DIF to establish an application connection with another IPCP in a (N)-DIF to join it.
+
+Since my initial MVP is going to be all in a single process, there is no (N-1)-DIF nor is there a second IPCP to contact.
+
+However, that raises an interesting thought. To simplify debugging, there's no reason my "second phase" goal couldn't be to create two (N)-DIFs and a single (N-1)-DIF in one process just to see how all of this enrollment stuff will play out. In my view I would have originally targeted using 2 processes to do this via shared memory but this goal is probably even simpler. I don't want to get too far ahead of myself so this will remain in the TODO stage.
+
+#### Registration
+The book and ref model never really _directly_ address the topic of AP registration on a host. There's a bit of hand waving and probably some nod towards the text not being an implementation guide.
+
+As noted on 20190306, there needs to be some kind of omniscient/global registration mechanism on a host that knows all APs and DAFs. Why? A few reasons.
+
+1. For the DIF Allocator to work, it needs to be able to find some DIF that supports a currently unknown application name. See note on 20190320. What I believe this means in practice is that there might be two DAFs of same rank that have no (N-m)-DAF in common to connect them. Therefore, the DIF-Allocator can come into play to create a (N+1)-DAF that _spans the scope_ of both (N)-DAFs so they can be connected. As noted sometime before, it's a bit mind bending to realize that sometimes a DAF _goes up the stack_ to relay to another DAF. Regardless, this omniscient registration mechanism knows about both (N)-DAFs and can tell the DIF-Allocator that, hey, DAF-A0 wants to talk to "app-z" but only DAF-B0 has access to it. Then the DIF-Allocator can potentially create a DAF-A1 that spans DAF-A0 and DAF-B0.
+2. For any DAF name lookup to work at all, there has to be a way to "seed" the local registration mechanism with entries. Perhaps this is a static list like a YAML file that lists name, purpose, filepath, and some other details which is read into memory when this registration mechanism is bootstrapped at OS bootup. Or, maybe the process happens in reverse where there is a static YAML file that defines this host's DAFs for some mechanism to bootstrap them. When they boot, they register themselves and their known applications (listed in that YAML file) with the registration mechanism. More than one way to skin this cat, I suppose. Maybe it's a combo of the above.
+3. I don't have a third reason right now. :)
+
+
+# 20190325
+#### IAP (IPC Access Protocol)
+I was looking forward to implementing IAP but I see that it isn't necessary when all lookups occur within a single memory space. There is no "forwarding" of the lookup request to other DAFs in this degenerate case. When I move to the multi-DIF model, this will be a fun exercise. I expect it will require a majority of the DIF internals to work to support the forwarding of requests and the return of a response.
+
+#### Accept Loop
+In traditional sockets, the program explicitly binds to a port (not port-id) and listens on it. After listening, it blocks on an `accept` call so that incoming connections can be split off to their port-id for the duration of the connection.
+
+I have a `JokeServer` and a `JokeClient` that I'm building piece-meal. I just got to the point where it makes sense for the `JokeServer` to `listen` for and `accept` incoming requests. And I got stuck for a moment. What should be the correct behavior here for RINA?
+
+From the text and ref model we know that a DIF has the "power" to locate a service and instantiate it if it's not running. That's a really powerful concept that contained nuances I never explored until now. In effect, the DIF is doing the equivalent of the `listen` and `accept` on behalf of any service.
+
+One, it may instantiate a new instance to service an incoming request. Or two, it may hand off the request to an already running instance for it to process.
+
+Let's look at both separately.
+
+1. Instantiate
+   This is the interesting one to me since it's new to me (though maybe `systemd` and other modern daemons do this work now... I don't know). What information does the DIF need in order to properly instantiate a process? And how does it get that information?
+   
+   I believe this is all tied in to the name lookup service. Some mechanism will start RINA (if it hasn't been yet) and register itself with it. It will give the name service its own name (which doubles as the service name that others may connect to), a reference to itself so the DIF can instantiate it, and perhaps some instructions on what arguments may be passed during instantiation. This third bit has me scratching my head a bit. I'd argue that _at most_ it should allow a configuration file to be passed via some convention. Beyond that, the service itself shouldn't need anything to boot or it can have a path to its configuration file statically saved. Hmmm, now that I write that last bit the "statically saved" portion jumps out at me as a bad idea. So, we're back to the first item which is that a configuration file may be passed to the new process.
+   
+   Since this work is all going on in a single process, we can't exactly `exec` a new process here. We need to start a thread within the process so the service may run at least once and do its work.
+   
+2. Bind to Running Process
+   This is the approach we are all already familiar with. The running process has an ongoing `listen` and `accept` loop running so new requests can be handled faster. We avoid the overhead of instantiation and can just get right to handling the incoming request. 
+   
+   Maybe the process will handle some number of incoming requests or wait some period between requests and then shut itself down. Ideally RINA could handle the situation where it can't hand off to a running process because it shut down (died, shut down cleanly, doesn't matter). This is interesting to me too. Need to figure out how RINA can tell the difference or that it's reference to a running service has gone dead.
+   
+   Note I'm saying RINA here instead of DIF. Not sure what owns this responsibility in the DIF yet. Need to review the spec.
+   
+   What would this handoff to a running process look like? What is the process doing? Presumably it's blocked on something waiting for activity. What is it blocked on? And when there is activity, what does it do next?
+   
+   In a socket application, the bound socket is (usually) blocked on `accept`. When a new connection comes in to the connection queue, the oldest is popped off and its file descriptor is passed back by reference in the `accept` call. That socket FD can now be used to read/write/close.
+   
+   In a RINA situation, we could mimic this behavior. Let's say the RINA process is blocked on a flow `read` where the flow handles only incoming requests from the DIF. A message, conforming to a conventional agreed upon protocol, arrives containing the port-id and name of the remote end. This information can be parsed out from the flow and either handled in an event loop or handed off to a thread to process the incoming data. The incoming data in this case would be a `Allocate_Request.deliver` (see D-Base-2011-015.pdf for the narrative). This is all `FlowAllocator` and `FlowAllocatorInstance` work here. None of the narratives really suggest what the destination process is doing, so that's the part I'm making up (i.e. blocked on a read to a "request" flow). This would probably be wrapped up in an API that I could cleverly call `accept`.
+   
+Interesting stuff that I've run down today. I went from worrying about the name service to diving headlong into the FlowAllocator. Out of time now but I'll code something up on the morning ride.
+
+
+# 20190326
+#### Binding to Accept
+So I want to go with a modification of Option 2 from the 20190325 entry. My server class will register itself *and* it will bootstrap itself and wait for incoming flow requests. This seems like it will be a common pattern, so I'd rather do something useful and easy than work on the hardest case first ("booting" a non-running class and handing it a flow request).
+
+Steps appear to be:
+1. Register name and self with name service
+2. Boot the class
+3. Make a (blocking?) method call on the RINA API to read incoming flow requests
+4. When a request arrives, handle the request by accepting or rejecting it
+5. If accepted the flow, tell a joke to that flow
+6. Deallocate the previously accepted flow
+7. Go back to waiting for another request
+
+Somewhere in here there will be QoS settings, blocking on read FDs (or the internal equivalent), maybe spawning a new thread to handle the incoming flow, yada yada.
+
+I have Step 1 done. Step 2 will take some thinking because Step 2 is pointless without Step 3. I don't want my initializer to go into an endless loop so there needs to be a separate call to `run` or similar. Details.
+
+In order to do Step 3, I need a `FlowAllocator` and some idea on how to make a `FlowAllocatorInstance`. Flow control is important (a flow is pathological without it!) so we'll need some kind of DTP/DTCP setup too. Lots of code to get Step 3 going. Let's get started.
+
+#### For Those Following Along
+When code is pushed, read it with the following in mind:
+1. Make it work
+2. Make it right
+3. Make it fast
+
+I'm actually on Step 0 which is `figure out how to get to Step 1`.
