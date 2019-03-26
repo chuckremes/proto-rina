@@ -1,0 +1,79 @@
+#!/usr/bin/env ruby
+
+require_relative '../lib/proto-rina'
+
+# Will ask the JokeServer for a joke.
+#
+class JokeClient
+  Name = :joke_listener
+  
+  def initialize
+    ProtoRINA.start
+    
+    # Does each AE really need to know its canonical name?
+    @canonical_name = ProtoRINA.register_ae(name: Name)
+  end
+  
+  def run(max_requests:)
+    puts "#{Name}: dumping and exiting"
+    # yes, yes, race condition between this thread and the other
+    # don't care right now
+    ProtoRINA.dump
+  end
+end
+
+# Listens for joke requests and responds when a client asks
+# for a joke.
+#
+class JokeServer
+  # At the class level, start RINA and register yourself. RINA
+  # does the "implicit listen" on behalf of this class. By passing
+  # a reference to this class, we allow RINA to instantiate us and
+  # run us (how?) when there's a request for this service.
+  #
+  Name = :joke_teller
+  ProtoRINA.start
+  ProtoRINA.register_ae(name: Name, klass: self)
+  
+  def initialize
+    @joke_request_count = 0
+  end
+
+  # Puts the server into a loop to accept incoming flow requests
+  # and tell each one of them a joke.
+  #
+  def run(max_jokes:)
+    begin
+      accept_incoming
+      puts "#{Name}: dumping..."
+      ProtoRINA.dump
+      @joke_request_count += 1
+    while @joke_request_count < max_jokes
+
+    puts "#{Name}: max jokes told, now dumping and exiting"
+    ProtoRINA.dump
+  end
+  
+  # Block in waiting for an incoming request for +Name+
+  #
+  def accept_incoming
+    request = ProtoRINA.flow_read(name: Name)
+  end
+end
+
+# Start the IPC Process Manager and all affiliated services like
+# Naming, FlowAllocator, and others.
+#
+ProtoRINA.start
+
+client_thr = Thread.new do
+  client = JokeClient.new
+  client.run(max_requests: 1)
+end
+
+server_thr = Thread.new do
+  server = JokeServer.new
+  server.run(max_jokes: 1)
+end
+
+server_thr.join
