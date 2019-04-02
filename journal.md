@@ -478,3 +478,56 @@ When code is pushed, read it with the following in mind:
 3. Make it fast
 
 I'm actually on Step 0 which is `figure out how to get to Step 1`.
+
+
+# 20190329
+#### DIF Allocator
+Ref model section 4.1.6.2:
+    The components of the DA-DAF are much as they are in the NSM. The IRM of most applications 
+    will only be able to request a new DIF from the DIF-Allocator and have a DIF created for 
+    their use. In most cases, the Distributed Management System (DMS) responsible for the 
+    domain in which Applications exist will perform all registration related functions. The 
+    registration process makes the names of applications and their supporting DIFs along 
+    with various properties available to the DA- DAF.
+
+
+# 20190402
+#### Name Search Security
+Ref model section 4.1.6.3
+    This also ensures that the security of the application is not compromised, by returning 
+    whether or not the application exists. If the requesting application’s credentials 
+    do not allow access, “not found” is returned.
+
+Interesting stuff on the "null" or "bootstrap" case in that same section towards the end. The enrollment procedure always bothers me because it requires some kind of back-and-forth handshake. Thinking ahead to scenarios where there is a large RTT (or BDP), the default situation should be to send a data PDU that includes the handshake/enrollment information in it. I'll have to dig through the docs again to find what this is called but I know I've seen it. Instead of requiring a response to be returned during enrollment, sufficient information is provided in the first PDU to confirm the enrollment. For example, this would be useful when building intra-solar RINA networks. If it takes hours for a PDU to arrive, you certainly don't want to go through a complex bidirectional handshake to setup the flow!
+
+I can't help but think this bootstrap case provides a broad hint to me on how to bootstrap a system. The DIF-Allocator is clearly an important component but it's complex enough that I don't see an easy way to create even a simple version of it.
+
+Take the example above of bootstrapping a DIF on multi-access media which would be a common case. Some system must generate a PDU to begin enrollment without even knowing who is available in that broadcast domain. This "first broadcaster" sends the PDU with their address (e.g. the MAC) as the "source application" name. The receivers of this broadcast consider their own unique MAC address to be the "destination application name" in this context. I imagine when enrolling in an ethernet configuration, every device will need to broadcast their desire to enroll when they activate. All receivers of this will then enroll that new endpoint into their DIF.
+
+We have the issue of who goes first. Let's break it down into some simple cases:
+
+1. Single device
+The degenerate case here is when a multi-access media device activates and broadcasts its desire to enroll in a DIF but receives no response. Given some timeout on the enrollment, I'd think that the local DIF-Allocator would tell the device to create its own IPCP and consider itself a sole-member DIF.
+
+2. Many devices, slow responses
+Same as 1, many devices could broadcast their desire to enroll but their timers expire before responses arrive. Every device would then create its own DIF. Ultimately an enrollment would arrive from these other devices and the handshake could commence. However, since each device already generated their own DIF, the DIF-Allocator would need to broker the creation of a (N+1)-DIF to span the multi-access media.
+
+3. Many devices, fast responses
+Upon activation, each device broadcasts enrollment. Prior to timer expiration, each device receives another enrollment request. Not sure here, but since each device is broadcasting their desire to enroll in an existing DIF, the fact of enrollment implies there is already a locally running IPCP (that's the only process that can request enrollment) so there is *already a local DIF running*. So this is really Scenario 2.
+
+Lesson learned here is that in order for a device to enroll, it must already have a local DIF even if its the sole member.
+
+The DIF-Allocator has a choice though. In Scenario 2 I said it would broker creation of a (N+1)-DIF to span all nodes but that isn't necessarily true. Each device's DIF-Allocator could agree to merge their DIF with their fellow DIFs.
+
+#### Wireless
+The wireless multi-access media interests me now that I'm thinking about this. Our current typical usage is that we see a SSID broadcast by a base station. We try to join it in the clear or with a password. That's enrollment.
+
+However, the interesting part is that we see the SSID broadcast. How would this work in a RINA world? If we take our cue from the IP world, the SSID is broadcast for any nearby listeners to receive. They can choose to enroll or not. But in a RINA world, we do not broadcast our services like that.
+
+I imagine we would fall back on the concept of "well known ports." When given an environment where we don't have any previous information, the IPCP/DIF on our wireless card can try to enroll in the base station's DIF by broadcasting an enrollment request (to a well known port). If we don't have a password yet, we'll be rejected but we will probably be able to figure out the service name that rejected us. That could be the equivalent of the SSID.
+
+I guess this is the same situation as wired multi-access media. I shouldn't let the lack of wires throw me off!
+
+Alternately, maybe all DIFs have a well known port open for one-off queries that don't require enrollment. We could ask the well known DIF port for a list of services and it could reply with the equivalent of the SSID.
+
+Perhaps I'll ask on the mailing list which of these is more in tune with the ref model.
