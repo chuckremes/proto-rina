@@ -531,3 +531,31 @@ I guess this is the same situation as wired multi-access media. I shouldn't let 
 Alternately, maybe all DIFs have a well known port open for one-off queries that don't require enrollment. We could ask the well known DIF port for a list of services and it could reply with the equivalent of the SSID.
 
 Perhaps I'll ask on the mailing list which of these is more in tune with the ref model.
+
+
+# 20190403
+#### Diagram of IPCP
+
+    AE-i ----
+             |                       <---
+             Port (w/Port-id)            |
+             |                           | - flow-allocator-instance-id == port-id
+             CEP (w/CEP-Id)              | - CEP-id == EFC-PM-instance-id
+             |   EFCPM                   |
+             |   (DTT & DCT)             | - state vector stored in RIB
+             |                       <---   (CEP + EFCPM deallocate/expire after 2MPL)
+             RMT
+             |
+             SDU Protection
+             |
+    ------ (N-1)-DIF -------
+    
+       (mirror image of the above exists at other end of flow)
+
+Several interesting aspects of decoupling the port-id from the cep-id. If traffic stops flowing, we deallocate the cep-id and its state vector for the EFC-PM because the state has expired. However, the port-id (flow-allocator-instance-id) remains in place. If new traffic originates at either end, a new EFC-PM instance is allocated (plus state vector) and it handles passing the traffic through the other IPCP tasks.
+
+For one, this has powerful security implications. One type of attack is a replay attack where a sequence-id wraps around (overflows) and the attacker can use that to perform a man-in-the-middle or other similar attack. RINA avoids this by detecting the sequence-id is about to overflow and _allocates a new cep-id_. Since the total sequence value includes the cep-id, this thwarts the replay attack. And it isn't even a special case! The layer must be able to deallocate and reallocate cep-ids for a flow regularly, so it's just a common operation.
+
+
+             
+             
