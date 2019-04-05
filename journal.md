@@ -557,5 +557,66 @@ Several interesting aspects of decoupling the port-id from the cep-id. If traffi
 For one, this has powerful security implications. One type of attack is a replay attack where a sequence-id wraps around (overflows) and the attacker can use that to perform a man-in-the-middle or other similar attack. RINA avoids this by detecting the sequence-id is about to overflow and _allocates a new cep-id_. Since the total sequence value includes the cep-id, this thwarts the replay attack. And it isn't even a special case! The layer must be able to deallocate and reallocate cep-ids for a flow regularly, so it's just a common operation.
 
 
-             
-             
+# 20190404
+#### Attacks
+I don't even know why I'm thinking about this now. When reviewing how _flows_ are created and the connections between their EFCPM-instances, I was once again reminded that the connection is dropped when there is no traffic for 2MPL (Max Packet Lifetime). It occurred to me that an attacker could perform an "EFCPM-instance allocation DoS" by waiting just over 2MPL and then sending traffic again. There's obviously some bookkeeping involved with allocating/deallocating these instances plus the state vector (transmission control block!) that is stored in the RIB.
+
+However, I remind myself that no one can join a DIF without enrolling. If they enrolled, then someone respects their credentials and they are a valid user. If a DAP using an enrolled DIF exhibits this behavior then it isn't really a DoS. _Someone let them in the front door!_ The real solution is to revoke their creds and kick them out. There might be other attack vectors in the enrollment process but that can be mitigated separately.
+
+#### Flow Creation within a DIF
+Most of the time I am thinking about flows, it's between two AE/DAPs. However, tasks internal to a DIF can also allocate flows. For example, the RMT (Relaying Multiplexing Task) may have flows with multiple (N-1)-DIFs.
+
+This feels weird because the RMT itself is part of the "pipeline" from an AE flow to the remote end. How can it itself have a flow when it's part of a flow pipeline? I think the answer here is in the "M" part of RMT. Ultimately _N_ flows in a DIF need to relay through (in the common situation) a single (N-1)-DIF. It makes no sense from a resource standpoint to match those _M_ flows to the subordinate layer. Instead, those _M_ flows are multiplexed down to _N_ flows (where N < M) based on QoS characteristics. Flows that need ordered, reliable delivery get multiplexed onto the ordered-reliable-flow. Flows that are best effort, out of order delivery multiplex onto the best-effort-unordered-flow.
+
+I'd guess that the _N_ flows between DIFs will be far smaller than the _M_ flows utilizing that top layer, but that's just conjecture.
+
+Anyway, thinking about the RMT having its own flow means that it has its own EFCPM-instance to manage DTP and DTC. But those EFCPM-i's must be able to skip the RMT otherwise infinite regress.
+
+I should ask on the mailing list about that. I should draw this out on paper too.
+
+
+# 20190405
+#### More on RMT
+Thought about it some more and came up with a different perspective. _All_ flows go through the RMT. The RMT looks at their destination application name, consults its forwarding table, and if there's a match it does two things:
+1. Adds the Relay PCI to the PDU
+2. Matches the source flow's QoS to one of its flows to the (N-1)-DIF. If matched, it hands the PDU to that flow, otherwise it creates a new flow with the appropriate QoS to the (N-1)-DIF.
+
+If the forwarding table produces no match, then I think we conclude it's a local delivery and the Relay PCI is _not added_. Where does the PDU go and how does it get there?
+
+I _think_ the PDU is just directly added to the incoming queue for the local destination connection-endpoint. We skip the SDU Protection step since the PDU is not leaving the DIF at all. The incoming queue would be hooked up to the "remote" end's EFCPM-instance which would unwrap the PDU and deliver it to the AE on the next _read_ API call. I'd bet there are some further steps related to QoS like dropping the PDU if the queue is full and it's best-effort or something. Perhaps flow-control or congestion-control kick in for that case (yes, locally).
+
+Let's back up and look more closely at what the RMT does for a *match* that is relayed to the (N-1)-DIF. The reference model says the PDU is multiplexed onto the appropriate flow (creating one if it doesn't exist), but then there's a "hand wave" and suddenly the PDU goes through SDU Protection step and is written to the (N-1)-DIF. I say it's a "hand wave" because some important details are left out that I'm not sure how to handle.
+
+If the RMT has a _flow_ to the (N-1)-DIF, then it should have all the same supporting structure as any other flow. But that leads to infinite regress because that supporting structure would include another RMT. So let's assume that this is some kind of degenerate case of a flow that makes the RMT a no op. The PDU would still need to go through the delimiting step, EFCPM-i handling, RMT no op, and then SDU Protection (again?). Hmmm, so I think we must assume the Delimiting step here is also a no op. Although it might be that the multiplexing operation has to do some work which is effectively delimiting anyway.
+
+Let's explore that for a moment. It's feasible that the upstream flow has a max PDU size either smaller or larger than the RMT flow to the (N-1)-DIF. If upstream's is smaller, then the RMT can potentially add multiple PDUs to its PDU before sending. If upstream's is larger, then the RMT may need to fragment the PDU and do multiple writes to its flow. Using the RMT flow as a new frame of reference, the upstream flow's PDU is _this stream's_ SDU. SDUs always go through delimiting. Both cases appear to need some kind of delimiting, so it is _not_ a no op.
+
+Back to the RMT flow pipeline. We've established it has its own delimiting step. It must also have its own EFCPM-instance for handling flow-control to the lower DIF. The RMT step in this pipeline is absolutely a no op. And lastly, the SDU Protection step must occur. I believe this step "belongs to" the upstream flow, so the RMT flow's SDU Protection is effectively a no op but the PDU immediately filters through the upstream flow's SDU Protection step. Maybe it doesn't matter which flow we say "owns" that SDU Protection. I'll need to revisit the docs and see if SDU Protection is the same DIF-wide or if it's per flow. It really only makes sense for it to be "global" to the DIF so the remote end knows how to decode it. Yeah, it's DIF-wide and not per flow.
+
+I'll also revisit my earlier remark about which flow _owns_ the SDU Protection step and I'll say it's the RMT that owns it. Reason is that if the PDU is delivered locally, we'll never put it through SDU Protection; it will be delivered directly. So therefore, SDU Protection is only necessary when leaving the DIF and is the proper responsibility of the RMT flows.
+
+Let's try and draw it.
+
+    RMT -------------
+              |
+              |
+            Check forwarding table
+                      |
+                    /   \
+                  /       \
+              No match      -------- match! -------
+                 |                                 |
+              Deliver locally                      |
+                                               Map/write to correct (N-1)-DIF flow
+                                                   |
+                                                Delimiting
+                                                   |
+                                                EFCPM-i
+                                                   |
+                                                RMT (no op)
+                                                   |
+                                                SDU Protection
+                                                   |
+                                                ???????
+
+Not quite sure what happens at that last step. We have written to the appropriate RMT flow but what does that mean really? How does the hand-off to the (N-1)-DIF occur? Need to think on this. It's probably obvious but I can't see it right now.
