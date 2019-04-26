@@ -620,3 +620,66 @@ Let's try and draw it.
                                                 ???????
 
 Not quite sure what happens at that last step. We have written to the appropriate RMT flow but what does that mean really? How does the hand-off to the (N-1)-DIF occur? Need to think on this. It's probably obvious but I can't see it right now.
+
+
+# 20190411
+#### RMT Hand-Off to (N-1)-DIF
+Had a terrible sickness for last few days; food poisoning. Ugh.
+
+Anyway, the distance of time hasn't offered me any solution to the last question asked about RMT hand-off. So, let's rubber duck this thing.
+
+How does it work in IP today? Well, it's been 20 years (!) since I wrote an ethernet driver (tulip chipsets) but my recollection was that I had to setup a memory segment in main memory that the card had permission to DMA (direct memory access) over the bus. There was a buffer of some kind (ring buffer?) and I had to provide a memory address to its start along with a list length. When the system had added mbufs to the list, it made a call into my driver that then twiddled a bit (or set of bits) on the card to enable transmission. I _think_ the card would then read the memory address which was essentially pointing to an mbuf header and then figure out how much data was there to copy from memory and send over the wire.
+
+So how might this apply to RINA? The RMT flow to the (N-1)-DIF has both an outgoing and incoming queue, presumably. When all RINA steps have been taken, the PDU is placed on the outgoing queue. And then...
+
+Here's a gap. The ref model is silent on this topic probably because it's an implementation detail. :)
+
+And the main API that the ref model discusses is the API used by AEs to talk to a DIF/IPCP. That's the open, close, read, write, stop, start set of primitives I think. Hmmm, maybe not. I think that might refer to the 6 basic operations that are part of any protocol. Double hmmm... actually the API I'm concerned with is the allocate_request, allocate_response, send, receive, deallocate operations.
+
+Hold the phone! From the perspective of the (N-1)-DIF, the N-DIF is essentially an AE. So it presents the same API to the N-DIF that it would to any AE which is that same list of operations: allocate_request, allocate_response, send, receive, deallocate.
+
+So the RMT flow was _allocated_ to the (N-1)-DIF upon _enrollment_. That means the RMT can send/receive on the flow. But now we're back to (almost) square one where the outgoing PDU is placed on an outbound queue. Then what???
+
+
+# 20190415
+#### Book Prose vs Ref Model
+I find myself increasingly referring back to the book. I find it to be much better written and clearer about concepts than the reference model documentation. I wonder if the medium is influencing me? Do I prefer paper and ink over light and pixels for comprehension?
+
+#### API Service Primitives
+Finally clarified this for myself. When an AP wants to open a flow to another AP, it invokes the IPC Service primitives which are:
+ * Allocate Request
+ * Allocate Response
+ * Send
+ * Receive
+ * Deallocate
+
+The calls to _Send_ and _Receive_ are data transfer API primitives. These send/receive SDUs on an established flow. See pages 268+ for a narrative on how data transfer occurs between APs. Most enlightening on this umpteenth reread.
+
+
+# 20190417
+#### Update
+Been reading and thinking.
+
+Confirmed some inconsistencies between the book and ref model regarding RMT. In book, it handles outbound messages prior to the SDU Protection step and prepends PCI (page 255). "All PDUs for all EFCP connections have Relaying PCI prepended to the PDUs. This Relaying PCI is associated with the relaying and multiplexing function. When a DIF has more than two IPC processes (i.e. most of the time), this task must also add addressing information to the PCI. The PCI contains the source and destination addresses." Then on page 257, "The last function performed on PDUs before they are delivered to the layer below is taking necessary precautions to safeguard their integrity. Any data corruption protection over the data _and PCI_, including lifetime guards and/or encryption, are performed here."
+
+In ref model, it may modify PCI but doesn't add any (section 5.1.4.4), plus it's called _after_ SDU Protection. "Actual systems may well be various combinations of these. The RMT does not generate any additional PCI."
+
+"5.1.4.5. SDU Protection
+SDU Protection has the same functionality as described as part of IPC Management in the common DAP infrastructure. The only slight difference here is that an IPC Process may have more than one supporting DIF. The SDU Protection on each (N-1)-flow may be different. This will primarily occur where the (N-1)-DIF must reflect the limited characteristics of the media." This is the key element. If there are multiple flows to different (N-1)-DIFs each with their own SDU protection policy, the RMT _must be invoked first_ to assign a PDU to one of those flows. It's the only function that can handle this assignment so it must run first, and _then the SDU protection_ may run.
+
+PNA Technical Note #DIF-DT-6 (D-Base-2012-010.pdf) in the introduction section says: "This task generates no protocol, but may modify PCI of PDUs it processes." Then in Section 5.2 it says, "PDUs are delivered to the RMT ready to be forwarded. No further processing is required. For outgoing PDUs, this implies SDU Protection has already been applied."
+
+I have issues with this.
+
+#### Facts
+* APs (Application Processes) are not part of the DIF (book, page xxxx)
+* 
+
+
+# 20190424
+#### Progress?
+I've been emailing back and forth with the RINA ML. Some interesting things were said. Ultimately my plans are unchanged. Will continue working on putting a DIF into each AP to facilitate local concurrency operations while allowing for simple growth to a distributed model without any API changes. If it's all message passing, then scaling up and out should be easy.
+
+I spent a lot of time on those emails. I have limited time to think through _and code_ my ideas, so it's time to prioritize that aspect again.
+
+But tomorrow. Too tired today.
