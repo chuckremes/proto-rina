@@ -683,3 +683,57 @@ I've been emailing back and forth with the RINA ML. Some interesting things were
 I spent a lot of time on those emails. I have limited time to think through _and code_ my ideas, so it's time to prioritize that aspect again.
 
 But tomorrow. Too tired today.
+
+
+# 20190430
+#### Process as an OS
+Last week there was a flurry of emails to the ML. I proposed my structure of embedding a DIF inside each AP and letting the threads use it for intra-process communication. Lots of pushback from Day. But! We ultimately came to an understanding and it turns out our disagreement was rooted in _definitions_.
+
+When I described the AP as DIF + threads model, he vehemently disagreed. After some back and forth it became clear to me that he and I defined "process" differently. While I was taking the modern day UNIX process view, Day was arguing from some never-seen-in-the-wild perfect model where the "process" was like an operating system unto itself and its threads were APs! That's right, in this situation the threads were APs and the process was something else (still not sure on its name).
+
+So, we were actually in agreement but we had different definitions for these common elements.
+
+I will be pushing forward on embedding a DIF-per-UNIX-process. This time I will define each AP as a thread.
+
+
+# 20190501
+#### Restart Coding
+Less blather, more coding.
+
+#### Recap
+I have written a small `Registry` function. As threads/APs launch, they can notify the Registration mechanism of their service name. Something tells me they should also register other details. Perhaps a default QoS? I'd imagine we would want inter-AP comms within a process to use the highest level of delivery and side-step any marshal/unmarshal policy; just pass references. However, the QoS could also specify "best effort" wherein messages are dropped if the "remote end" reads too slowly.
+
+With Registration semi-functional, what's next? Remember that APs don't need to enroll in the local DIF, they just use it. Therefore, next step is to have the "server" AP make a call to setup a service flow to handle incoming connections. 
+
+After that, have the "client" AP try to establish a flow with the service name "incoming" flow. Presumably that will entail some minor enrollment procedure (probably just a no op for now) but the allocate request reply should point the requestor to a new address. That is, do not return the address of the "incoming" flow... hmmm, this just tripped a thought.
+
+As far as the client side is concerned, it doesn't need to know the "service incoming" name though it could. It just needs to ask for a flow to that service and the DIF should pass the allocate request to it. This specific server AE then can create a new AE to manage the new flow. Put another way, the server AE has a flow established with the DIF for incoming allocate requests.
+
+I've come full circle. This is what I said to do in the second paragraph above. The main takeaway is that the permanent AE listening for allocate requests never returns its address in the reply. It undertakes to create a new AE and its address should be returned. How does this new AE get an address assigned? Not sure, but clearly that address assignment happens from the DIF. Need to look at the M_CONNECT stuff and see how that narrative describes the procedure.
+
+1. Verify APs are registering a name
+2. Server AP to setup a listening flow
+3. Client AP to send a allocate request
+4. Server AP to create new AE for incoming request, get an address assigned
+5. Server AP to send allocate request reply with address embedded
+6. Client AP to receive allocate request reply
+7. ...
+
+
+# 20190502
+#### Recap Continued
+On further reflection, I'm kind of disappointed that we are ending up with the `listen` and `accept` style calls for RINA just like for BSD sockets. I had hoped for something new and interesting. Perhaps it's a failure of my imagination.
+
+This issue of listening for connections and somehow getting a new address assigned had me perplexed. Here's how I think it will work in practice. This is an implementation detail not covered by the book or ref model.
+
+A "server" will open a flow _with the DIF_ probably connecting to a "well known port" like "DIF-listener service." This service will be contacted when _allocate requests_ come through to match up the request with the appropriate service. When a match is found, a message will be sent on that "listen flow" to the AP. The AP will get this message and use its contents to create a new flow with the requestor. This is how the address is assigned by the DIF! Shoot, ran out of time... will continue this thought tonight.
+
+Reread D-Base-2011-015.pdf to get some idea of the submit/deliver process. I think what will happen here is that the "listen flow" will deliver the AllocateRequest.deliver to the AE. If the AE accepts this request, the AE will invoke AllocateResponse (this is effectively the BSD `accept` calls). This will setup the flow binding from the perspective of the destination application. Presumably the DIF will fill in the destination address details in that response PDU and send it back.
+
+The Response PDU makes its way back to the requestor, and the state machine advances as described in the documentation. 
+
+The key difference here is that we have this permanent flow configured between the DIF and the AE to listen for incoming AllocateRequest PDUs. They are delivered to the destination AE. The destination AE may refuse in which case the response with a correct error code will propogate back to the source via the half-configured FAI. If the AE accepts the request, the AE sets up the final FAI endpoint via the call to AllocateResponse. 
+
+I hope that makes sense ^^. 
+
+Will try and lay down some of this code tomorrow morning.
