@@ -225,9 +225,9 @@ Perhaps the QoS cube can influence this?
 
 Anyway, since this is all in-process, it occurs to me that allowing a writer to queue within the RINA thread is somewhat non-sensical. Why make the RINA thread handle this queue management / resource allocation issue when the worker thread has the most localized knowledge of its requirements? I'd say that we want to implement some kind of flow control even within the process to prevent fast producers from overrunning slow consumers.
 
-So how do we do this? I think the answer lies in the API. Presumably we will have `flow_open`, `flow_close`, `flow_read`, and `flow_write` (it remains to be seen if we have the `start`/`stop` mechanisms described by Day). If a fast producer is calling `flow_write` in a tight loop, it should get back a failure if it attempts to overrun its consumers. The producer can then choose to either drop the message itself or block while waiting for the consumer to catch up.
+So how do we do this? I think the answer lies in the API. Presumably we will have `flow_open`, `flow_close`, `flow_read`, and `flow_write` (it remains to be seen if we have the `start`/`stop` mechanisms described by Day). If a fast producer is calling `flow_write` in a tight loop, it should get back a failure if it attempts to overrun its consumers. The producer can then choose to either drop the message itself or block while waiting for the consumer to catch up. The QoS cube will control this if it's in "reliable delivery" mode versus "best effort" mode.
 
-A practical implementation of this would look like a 1-element buffer. When a writer has written, it can't write again until RINA has delivered that message. Plus, every reader has a 1-element buffer. If there is already an element waiting, no other message can be delivered. Of course, this is all influenced by the QoS cube. If the cube specifies that newer message have priority over older messages, the buffer would be overwritten for the slow consumer.
+A practical implementation of this would look like a 1-element buffer. When a writer has written, it can't write again until RINA has delivered that message. Plus, every reader has a 1-element buffer. If there is already an element waiting, no other message can be delivered. Of course, this is all influenced by the QoS cube. If the cube specifies that newer message have priority over older messages, the buffer would be overwritten for the slow consumer. Think of the "radio" pattern.
 
 One of these days I'm going to have to dig in to what a QoS "cube" looks like. I recall investigating the ideas behind it many months ago and discovered that it's probably a multi-dimensional cube with dimensions like jitter and latency. I forget what the others are...
 
@@ -726,9 +726,16 @@ On further reflection, I'm kind of disappointed that we are ending up with the `
 
 This issue of listening for connections and somehow getting a new address assigned had me perplexed. Here's how I think it will work in practice. This is an implementation detail not covered by the book or ref model.
 
-A "server" will open a flow _with the DIF_ probably connecting to a "well known port" like "DIF-listener service." This service will be contacted when _allocate requests_ come through to match up the request with the appropriate service. When a match is found, a message will be sent on that "listen flow" to the AP. The AP will get this message and use its contents to create a new flow with the requestor. This is how the address is assigned by the DIF! Shoot, ran out of time... will continue this thought tonight.
+A "server" will open a flow _with the DIF_ probably connecting to a "well known port" like "DIF-listener service." This service will be contacted when _allocate requests_ come through to match up the request with the appropriate service. This match occurs inside the Flow Allocator, so this "listen" must somehow register the service name with the FA. When a match is found, the _allocate request_ message will be sent on that "listen flow" to the AP. The AP will get this message and use its contents to create a new flow with the requestor by calling _allocate response_. This is how the address is assigned by the DIF! Shoot, ran out of time... will continue this thought tonight.
 
-Reread D-Base-2011-015.pdf to get some idea of the submit/deliver process. I think what will happen here is that the "listen flow" will deliver the AllocateRequest.deliver to the AE. If the AE accepts this request, the AE will invoke AllocateResponse (this is effectively the BSD `accept` calls). This will setup the flow binding from the perspective of the destination application. Presumably the DIF will fill in the destination address details in that response PDU and send it back.
+Reread D-Base-2011-015.pdf to get some idea of the submit/deliver process. I think what will happen here is that the "listen flow" will deliver the AllocateRequest.deliver to the AE. If the AE accepts this request, the AE will invoke AllocateResponse (this is effectively the BSD `accept` calls). This will setup the flow binding from the perspective of the destination application. Presumably the DIF will fill in the destination address details in that response PDU and send it back. The _allocate response_ API call takes 3 arguments including _requestor name_, _QoS params_, and _port-id_. The _port-id_ must be set by the DIF, so presumably when this API call completes that field is returned to the AE. The AE sets it as empty when initiating the call.
+
+In Ruby, we'd probably set this call up like so:
+```ruby
+  # a port-id is same as a FAI-id, so this call to IRM
+  # should instantiate the local FAI and return its ID to caller
+  reason, port_id = IRM.allocate_response(@requestor_name, LOCAL_QoS_POLICY)
+```
 
 The Response PDU makes its way back to the requestor, and the state machine advances as described in the documentation. 
 
@@ -737,3 +744,140 @@ The key difference here is that we have this permanent flow configured between t
 I hope that makes sense ^^. 
 
 Will try and lay down some of this code tomorrow morning.
+
+
+# 20190507
+#### IRM vs FA
+Ref Model 6.1.3 mentions that in a DAP, an allocate request goes first to the IRM (IPC Resource Manager) which mediates access across all available DIFs. Each DIF is asked if the Application Name given in the allocate request is accessible through that DIF. This request goes through the Flow Allocator. 
+
+We'll assume the simple case where one DIF responds in the affirmative. The allocate request has already been passed through to the FA and a FAI has been instantiated to manage this flow.
+
+In my situation, the DIF / IPCP is in-process as is the FA. It really doesn't make sense to have an IRM in-process too, but for clarity of abstraction we'll create one.
+
+1. AP (thread) desires a flow, so it initiates an allocate request to the IRM.
+2. IRM is a thin wrapper here because only one DIF is ever available in-process. It directly passes the request to the DIF's FA
+3. A response is received back by this FA and the result is cached by the IRM.
+4. Flow is now connected
+
+Most of the interesting stuff happens between steps 2 and 3 above.
+
+
+#### Definitions of AP
+BTW, the definitions of AP differ between technical notes. Be kind and create a pull request to synchronize these definitions everywhere. The definition on D-Base-2011-015.pdf (Flow Allocator) describes an AP as a process _or thread_. The other notes usually just identify AP as a process, so this one is a bit more fleshed out.
+
+
+# 20190514
+#### Pause
+Lots of distractions and deadline at my Day Job, so work here will be slow or nonexistant for probably the rest of the month.
+
+
+# 20190605
+#### Pause Ending Soon
+I haven't been completely idle. Investigating how to efficiently transfer data between threads and/or processes via shared constructs primarily ring buffers. Writing and Reading to/from them is easy; the tricky part is what to do when the buffer is empty on the reader side and how to signal that more data is available. Busy wait? Terrible. Socket? Perish the thought (we're trying to replace those!). Pipe? Maybe. Semaphore? Maybe. 
+
+Useful links:
+
+https://github.com/diwic/fdringbuf-rs
+
+https://github.com/goldsborough/ipc-bench
+
+
+# 20190613
+#### Kind of Back
+I'm back but I'm going to work on something that's considered an "implementation detail" for RINA. I want to experiment with lock-free message passing between threads (or processes via shared memory). It's actually fairly well-known how to use a ring-buffer to rapidly transfer data from a single writer to a single reader. It's called the Disruptor pattern now but the technique has literally existed for 60 years.
+
+Implementing this pattern should be easy. The interesting and/or hard part will be determining the best way to wake up the reader when new data arrives.
+
+You see, the pattern says nothing about this aspect. Should the reader busy-wait? Sure, but that's wasteful. Poll periodically with a sleep in between? Sure, but that increases latency to the worst case of the sleep duration. Can the reader block on a semaphore? Sure, not a bad idea. Can the reader block on a pipe fd? Sure, the self-pipe trick is well known. What about blocking on a socket? Um, no... the point of this exercise is to replace sockets so I don't want them as a hard dependency for a core message passing mechanism. Will the same technique that works on BSD be suitable for OSX, Linux, embedded OSes? Probably not, so let's figure out a good abstraction and run with that instead.
+
+So I'm going to benchmark a few approaches on OSX to see what works best. The techniques are:
+1. Busy-wait (baseline)
+2. Block on shared-memory semaphore
+3. Block on shared-memory message queue
+4. Block on pipe
+
+All approaches will use the `select` mechanism. For various OSes there are better alternatives (kqueue, epoll, etc) but `select` is POSIX and available everywhere.
+
+
+# 20200106
+#### Revised Approach
+Day job had me too busy to pay any attention to this. We'll see if 2020Q1 is any better. Heh.
+
+To kick off the New Year, I think the right thing to do is take a tutorial approach to RINA. That is, step a reader through the whole stack and explain its functions at each component. Try to tie these components together and explain how they cooperate and coordinate.
+
+My initial idea is to take advantage of the base level knowledge many programmers already have of TCP/IP. I'll likely do a high-level overview of TCP and then dive into the various components and services that make it all work such as name resolution (AARP, DNS) and routing (RIP, OSPF) and maybe security (IPSEC). While explaining how it works in TCP, contrast that with how it works in RINA.
+
+There may be an impedance mismatch at certain times. I'll highlight when that happens. 
+
+Here's a short outline:
+
+* TCP Overview (30k view)
+* TCP Components
+  * IP
+  * Name resolution
+  * Session establishment
+  * Session teardown
+  * Routing
+  * Fragmentation / Reassembly
+  * Congestion control
+  * Retransmission
+* RINA Overview
+* RINA Components
+  * Comparison to TCP (and IP)
+  
+So yes, this means I need to bone up on my TCP knowledge a bit more. I need to keep the explanations abstract too. I am always tempted to dive into the implementation details (e.g. how the structures look in memory, how things are passed around, etc) but I need to stay above that level. Those implementation details are (I think) unimportant for understanding how RINA works.
+
+# 20200122
+#### Random Ideas
+On the RINA mailing list, John Day posed a question about how to maximize utilization of a communication medium with multiple RINA flows going over it. Another list member mentioned DeltaQ was able to get 99.8% utilization in a RINA environment.
+
+Most of my thoughts went to a variant of Nagle's Algorithm. The QoS parameters we think about tweaking the most are packet delay and packet delay variability (jitter). If the software pauses for some time quantum to collect PDUs, every instant when the timer fires it could transmit all it has. Packet delay would be near constant and jitter would be near 0. A simple formula occurred to me:
+
+  time quantum = transmission_rate + jitter - multiplexing_overhead - SDU_protection
+  
+THe units on that formula aren't right (haha) but it gives the general idea. That time quantum could be the Nagle delay to maximize throughput and "wire utilization." 
+
+As a side thought, it occurred to me that the memory allocators used by malloc, jemalloc, tmalloc, etc could also be an interesting approach to filling the outgoing PDU. My recollection of how these things actually work is a bit fuzzy so I may take some artistic license here. Memory allocators usually work on a concept of "slabs" within "arenas." In RINA-speak, the slab would be a flow for a particular QoS and the arena would represent the outgoing PDU. The slabs would be multiplexed onto the arena/PDU. I don't know if there's any "there" there but it was a thought.
+
+I need to write the list and ask if the DeltaQ paper / description is available online for free anywhere.
+
+#### Rereading Notes
+I want to get back to my original MVP plan which was to produce some code that could work in-process between threads. Going to review the written notes from last year to level set my thinking and get back in the mode.
+
+#### Followup on thought from 20190228
+Back then I wrote:
+
+  Additionally, the recursive nature of RINA makes the scaling dead simple. The in-process DIF can directly deliver messages to other threads within that process since they are all likely to be members of the DIF. If two separate processes need to collaborate, we'll need a lower ranking DIF that can act as transport between them. Hmmm, somehow this feels opposite to intentions... generally when two DIFs of same rank need to talk, the system somehow needs to create a DIF of a higher rank that they can both join. Will need to see how this shakes out in practice.
+  
+Here's how I view it now. When a process launches, it uses a well-known synonym to talk to the system DIF. If no such DIF exists, the process creates its own internally. Actually, the process should probably create its own DIF regardless. To recap, if there is no (N-1)-DIF available, the N-DIF just talks to itself. It should register itself with some system-wide mechanism though so when other DIFs are created they can potentially be linked.
+
+I probably don't need to go down this path. If (N-1)-DIF doesn't exist, do nothing. But there should always be a system-wide DIF created at boot time.
+
+# 20200203
+#### QoS Possibilities
+Handle the normal dimensions:
+1. Delay
+2. Jitter
+3. Bandwidth
+4. Error rate
+5. Drop rate
+
+Add some new dimensions:
+6. Encryption (none, optional, required)
+7. Compression (none, optional, required)
+8. Reference-passing (for efficient local flows)
+9. Reliability (on, off, last-in/radio)
+10. Sequential (none, optional, required)
+11. Encryption padding (none, optional, required)
+12. Flow control (required) <-- Remember that a network without flow control is pathological>
+13. Low-power-mode (none, optional, required) <-- coalesce PDUs and send when full or timer expires>
+14. Monotonic encryption
+
+Some of these might require further explanation. Encyrption Padding for instance would toggle filling out the unused portions of the max PDU size with random data. In encryption circles, some attacks occur because the attacker can discern patterns from varying packet sizes. Making all packets the same size thwarts this attack vector. Monotonic Encryption is a similar idea using time. An attacker could potentially discern contents from the amount of time spent encrypting the underlying data; by making all units consume the same time quantum, the encryption performance provides no insight. Reference Passing would allow for object references to be passed around rather than the objects themselves. Only useful on a single system but the performance and zero-copy gains might be worthwhile. Low Power Mode might be useful for IoT devices; transmission is expensive from a power perspective so wait until a packet is either full or a timer has expired before transmitting.
+
+#### Tutorial
+My mind has wandered away from the tutorial approach. Time for it to wander back.
+
+IP has a very different approach to name resolution and some affiliated matters, so I think starting with session establishment makes the most sense. Describing TCP session establishment and comparing to RINA will be instructive. Gather some links today and have them ready for the evening commute.
+
+Started working on the tutorial on the evening commute.
